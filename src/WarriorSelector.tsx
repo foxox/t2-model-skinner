@@ -308,7 +308,7 @@ export default function WarriorSelector() {
               }
             }}
             type="file"
-            accept=".png, image/png, .vl2, .zip, application/zip, application/zip-compressed"
+            accept=".png, image/png, .vl2, .skin, .zip, application/zip, application/zip-compressed"
             multiple
             hidden
           />

@@ -182,6 +182,7 @@ export default function CanvasTools() {
       switch (savedExportFileType) {
         case "vl2":
         case "png":
+        case "skin":
           setExportFileType(savedExportFileType);
           break;
       }
@@ -763,6 +764,7 @@ export default function CanvasTools() {
                   >
                     <option value="png">.png</option>
                     <option value="vl2">.vl2</option>
+                    <option value="skin">.skin</option>
                   </select>
                 </div>
               </div>

@@ -1,6 +1,7 @@
 "use client";
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Canvas as FabricCanvas,
   FabricImage,
   FabricObject,
   ActiveSelection,
@@ -48,6 +49,127 @@ type ObjectFilters = {
   Contrast?: number;
   Opacity?: number;
 };
+
+type SkinLayerManifest = {
+  filename: string;
+  layerIndex: number;
+  left: number;
+  top: number;
+  angle: number;
+  scaleX: number;
+  scaleY: number;
+  flipX: boolean;
+  flipY: boolean;
+  opacity: number;
+};
+
+type SkinExportManifest = {
+  version: 1;
+  modelType: string;
+  modelName: string;
+  skinName: string;
+  sizeMultiplier: number;
+  canvasType: "color";
+  materials: Array<{
+    materialName: string;
+    frameIndex: number;
+    filename: string;
+    layers: SkinLayerManifest[];
+  }>;
+};
+
+function getImageFilename(image: FabricImage, fallbackName: string) {
+  const customMetadata = (image as FabricImage & {
+    customMetadata?: { filename?: string };
+  }).customMetadata;
+  const explicitFilename = customMetadata?.filename ??
+    (image as FabricImage & { name?: string }).name;
+  if (typeof explicitFilename === "string" && explicitFilename.trim()) {
+    return explicitFilename;
+  }
+
+  const src = image.getSrc?.() ?? "";
+  const srcName = src.split("?")[0].split("/").pop() ?? "";
+  if (srcName) {
+    return srcName;
+  }
+
+  return fallbackName;
+}
+
+function serializeCanvasLayers(
+  canvas: FabricCanvas | null,
+  fallbackBaseName: string
+): SkinLayerManifest[] {
+  if (!canvas) {
+    return [];
+  }
+
+  return canvas
+    .getObjects()
+    .map((object, layerIndex) => {
+      if (!(object instanceof FabricImage)) {
+        return null;
+      }
+
+      const filename = getImageFilename(object, `${fallbackBaseName}-${layerIndex + 1}.png`);
+      const customMetadata = (object as FabricImage & {
+        customMetadata?: { filename?: string };
+      }).customMetadata ?? {};
+      customMetadata.filename = filename;
+      (object as FabricImage & { customMetadata?: { filename?: string } }).customMetadata =
+        customMetadata;
+      (object as FabricImage & { name?: string }).name = filename;
+
+      return {
+        filename,
+        layerIndex,
+        left: Number(object.left ?? 0),
+        top: Number(object.top ?? 0),
+        angle: Number(object.angle ?? 0),
+        scaleX: Number(object.scaleX ?? 1),
+        scaleY: Number(object.scaleY ?? 1),
+        flipX: Boolean(object.flipX),
+        flipY: Boolean(object.flipY),
+        opacity: Number(object.opacity ?? 1),
+      };
+    })
+    .filter((entry): entry is SkinLayerManifest => entry != null);
+}
+
+function getMaterialExportFilename({
+  materialDef,
+  actualModel,
+  frameIndex,
+  selectedModelType,
+  name,
+}: {
+  materialDef: MaterialDefinition;
+  actualModel: string;
+  frameIndex: number;
+  selectedModelType: string;
+  name: string;
+}) {
+  switch (selectedModelType) {
+    case "player":
+      return `${name}.${actualModel}.png`;
+    case "weapon":
+    case "vehicle": {
+      const frameZeroFile = materialDef.file ?? materialDef.name;
+      if ((materialDef.frameCount ?? 1) > 1) {
+        const match = frameZeroFile.match(/^(.+)(\d\d)$/);
+        if (match) {
+          const baseName = match[1];
+          return `${baseName}${frameIndex.toString().padStart(2, "0")}.png`;
+        }
+        throw new Error("Unexpected animation filename");
+      }
+      return `${frameZeroFile}.png`;
+    }
+    default:
+      throw new Error("Unknown model type");
+  }
+}
 
 export default function ToolsProvider({ children }: { children: ReactNode }) {
   const { actualModel, selectedModelType } = useWarrior();
@@ -480,37 +602,13 @@ export default function ToolsProvider({ children }: { children: ReactNode }) {
                 outputImageUrl = colorImageUrl;
               }
 
-              let filename: string;
-              switch (selectedModelType) {
-                case "player":
-                  filename = `${name}.${actualModel}.png`;
-                  break;
-                case "weapon":
-                case "vehicle":
-                  if (materialDef) {
-                    const frameZeroFile = materialDef.file ?? materialDef.name;
-                    if (frameCount > 1) {
-                      const match = frameZeroFile.match(/^(.+)(\d\d)$/);
-                      if (match) {
-                        const baseName = match[1];
-                        filename = `${baseName}${frameIndex
-                          .toString()
-                          .padStart(2, "0")}.png`;
-                      } else {
-                        throw new Error("Unexpected animation filename");
-                      }
-                    } else {
-                      filename = `${frameZeroFile}.png`;
-                    }
-                  } else if (selectedModelType === "weapon") {
-                    filename = `weapon_${actualModel}.png`;
-                  } else {
-                    filename = `${actualModel}.png`;
-                  }
-                  break;
-                default:
-                  throw new Error("Unknown model type");
-              }
+              const filename = getMaterialExportFilename({
+                materialDef,
+                actualModel,
+                frameIndex,
+                selectedModelType,
+                name,
+              });
 
               return { imageUrl: outputImageUrl, filename };
             });
@@ -550,6 +648,127 @@ export default function ToolsProvider({ children }: { children: ReactNode }) {
               break;
             case "vehicle":
               zipFileName = `z${camelCaseName}-${name}${multiplierString}.vl2`;
+              break;
+          }
+          await saveZipFile(zip, zipFileName);
+          break;
+        }
+        case "skin": {
+          // const materialFiles = await Promise.all(
+          //   materialExports.map(async (materialExport) => ({
+          //     data: await imageUrlToArrayBuffer(materialExport.imageUrl),
+          //     name: materialExport.filename,
+          //   }))
+          // );
+
+          const layerFiles: Array<{ data: ArrayBuffer; name: string }> = [];
+          const manifestMaterials: SkinExportManifest["materials"] = [];
+
+          for (let materialIndex = 0; materialIndex < selectedExportMaterials.length; materialIndex += 1) {
+            const isSelected = selectedExportMaterials[materialIndex];
+            if (!isSelected) {
+              continue;
+            }
+
+            const materialDef = materialDefs[materialIndex];
+            if (!materialDef) {
+              continue;
+            }
+
+            const frameCount = materialDef.frameCount ?? 1;
+            for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+              const canvas = canvases[
+                `${materialDef.name}:color:${frameIndex}:${sizeMultiplier}`
+              ]?.canvas;
+              const filename = getMaterialExportFilename({
+                materialDef,
+                actualModel,
+                frameIndex,
+                selectedModelType,
+                name,
+              });
+
+              const layerObjects =
+                canvas?.getObjects().filter(
+                  (object): object is FabricImage => object instanceof FabricImage
+                ) ?? [];
+
+              const layers = serializeCanvasLayers(canvas, filename);
+              const layerManifest = await Promise.all(
+                layers.map(async (layer) => {
+                  const layerObject = layerObjects[layer.layerIndex];
+                  if (!(layerObject instanceof FabricImage)) {
+                    return null;
+                  }
+
+                  const layerFilename = `${materialDef.name}-${frameIndex
+                    .toString()
+                    .padStart(2, "0")}-layer-${layer.layerIndex
+                    .toString()
+                    .padStart(2, "0")}.png`;
+
+                  layerFiles.push({
+                    data: await imageUrlToArrayBuffer(
+                      layerObject.toDataURL({
+                        format: "png",
+                        multiplier: 1,
+                      })
+                    ),
+                    name: layerFilename,
+                  });
+
+                  return {
+                    ...layer,
+                    filename: layerFilename,
+                  };
+                })
+              );
+
+              manifestMaterials.push({
+                materialName: materialDef.name,
+                frameIndex,
+                filename,
+                layers: layerManifest.filter(
+                  (
+                    layerFrame
+                  ): layerFrame is NonNullable<typeof layerFrame> =>
+                    layerFrame != null
+                ),
+              });
+            }
+          }
+
+          const zip = createZipFile([
+            // ...materialFiles,
+            ...layerFiles,
+          ]);
+
+          const manifest: SkinExportManifest = {
+            version: 1,
+            modelType: selectedModelType,
+            modelName: actualModel,
+            skinName: name,
+            sizeMultiplier,
+            canvasType: "color",
+            materials: manifestMaterials,
+          };
+
+          zip.file("skin.json", JSON.stringify(manifest, null, 2));
+
+          const camelCaseName = actualModel.replace(
+            /(?:^([a-z])|_([a-z]))/g,
+            (match, a, b) => (a || b).toUpperCase()
+          );
+          let zipFileName = "";
+          switch (selectedModelType) {
+            case "player":
+              zipFileName = `zPlayerSkin-${name}.skin`;
+              break;
+            case "weapon":
+              zipFileName = `zWeapon${camelCaseName}-${name}.skin`;
+              break;
+            case "vehicle":
+              zipFileName = `z${camelCaseName}-${name}.skin`;
               break;
           }
           await saveZipFile(zip, zipFileName);

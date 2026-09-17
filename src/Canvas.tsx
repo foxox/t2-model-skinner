@@ -22,11 +22,28 @@ function updateObjectControlOptions() {
   };
 }
 
+export type ImportedLayerData = {
+  layers: Array<{
+    layerIndex: number;
+    filename: string;
+    left: number;
+    top: number;
+    angle: number;
+    scaleX: number;
+    scaleY: number;
+    flipX: boolean;
+    flipY: boolean;
+    opacity: number;
+  }>;
+  layerImageUrls: Record<number, string>;
+};
+
 export interface CanvasProps {
   canvasId: string;
   canvasType: "color" | "metallic";
   onChange: (canvas: FabricCanvas) => void;
   baseImageUrl: string | null;
+  importedLayerData?: ImportedLayerData | null;
   textureSize: [number, number];
   defaultDrawingMode?: boolean;
 }
@@ -35,6 +52,7 @@ export default function Canvas({
   canvasId,
   onChange,
   baseImageUrl,
+  importedLayerData,
   textureSize,
   defaultDrawingMode = false,
 }: CanvasProps) {
@@ -234,54 +252,90 @@ export default function Canvas({
   useEffect(() => {
     setUndoHistory([]);
     setRedoHistory([]);
-  }, [canvas, baseImageUrl, textureSize]);
+  }, [canvas, baseImageUrl, importedLayerData, textureSize]);
 
   useEffect(() => {
-    if (canvas && textureSize) {
+    if (!canvas) {
+      return;
+    }
+
+    let stale = false;
+
+    const loadCanvasState = async () => {
       trackChanges.current = false;
+      // eslint-disable-next-line react-hooks/immutability
+      canvas.renderOnAddRemove = false;
       canvas.clear();
+
       if (baseImageUrl) {
-        let stale = false;
-        const addImage = async () => {
-          const image = await createFabricImage(baseImageUrl);
-          if (!stale) {
+        const image = await createFabricImage(baseImageUrl).catch(() => null);
+        if (!stale && image) {
+          if (!image.width || !image.height) {
+            throw new Error("Zero-height image");
+          }
+          image.selectable = false;
+          image.lockMovementX = true;
+          image.lockMovementY = true;
+          image.lockScalingX = true;
+          image.lockScalingY = true;
+          image.lockRotation = true;
+          image.hoverCursor = "default";
+          image.moveCursor = "default";
+          const [expectedWidth, expectedHeight] = textureSize;
+          const scaleX =
+            image.width === expectedWidth ? 1 : expectedWidth / image.width;
+          const scaleY =
+            image.height === expectedHeight
+              ? 1
+              : expectedHeight / image.height;
+          if (scaleX !== 1 || scaleY !== 1) {
+            image.scaleX = scaleX;
+            image.scaleY = scaleY;
+          }
+          canvas.centerObject(image);
+          canvas.add(image);
+        }
+      }
+
+      if (!stale && importedLayerData) {
+        for (const layer of importedLayerData.layers) {
+          const layerImageUrl = importedLayerData.layerImageUrls[layer.layerIndex];
+          if (!layerImageUrl) {
+            continue;
+          }
+          const image = await createFabricImage(layerImageUrl).catch(() => null);
+          if (!stale && image) {
             if (!image.width || !image.height) {
-              throw new Error("Zero-height image");
+              continue;
             }
-            image.selectable = false;
-            image.lockMovementX = true;
-            image.lockMovementY = true;
-            image.lockScalingX = true;
-            image.lockScalingY = true;
-            image.lockRotation = true;
-            image.hoverCursor = "default";
-            image.moveCursor = "default";
-            const [expectedWidth, expectedHeight] = textureSize;
-            const scaleX =
-              image.width === expectedWidth ? 1 : expectedWidth / image.width;
-            const scaleY =
-              image.height === expectedHeight
-                ? 1
-                : expectedHeight / image.height;
-            if (scaleX !== 1 || scaleY !== 1) {
-              image.scaleX = scaleX;
-              image.scaleY = scaleY;
-            }
-            canvas.centerObject(image);
+            image.set({
+              left: layer.left,
+              top: layer.top,
+              angle: layer.angle,
+              scaleX: layer.scaleX,
+              scaleY: layer.scaleY,
+              flipX: layer.flipX,
+              flipY: layer.flipY,
+              opacity: layer.opacity,
+            });
             canvas.add(image);
           }
-          trackChanges.current = true;
-          canvas.requestRenderAll();
-        };
-
-        addImage();
-
-        return () => {
-          stale = true;
-        };
+        }
       }
-    }
-  }, [canvas, baseImageUrl, textureSize]);
+
+      if (!stale) {
+        trackChanges.current = true;
+        canvas.renderOnAddRemove = true;
+        canvas.requestRenderAll();
+      }
+    };
+
+    loadCanvasState();
+
+    return () => {
+      stale = true;
+    };
+  }, [canvas, baseImageUrl, importedLayerData, textureSize]);
 
   return (
     <div className="CanvasContainer" data-active={isActive ? "true" : "false"}>

@@ -17,11 +17,52 @@ export default function ColorCanvas({
   materialDef: MaterialDefinition;
   frameIndex: number;
 }) {
-  const { skinImageUrls, defaultSkinImageUrls } = useWarrior();
+  const {
+    skinImageUrls,
+    defaultSkinImageUrls,
+    actualModel,
+    importedSkins,
+    selectedSkin,
+    selectedSkinType,
+  } = useWarrior();
   const skinImageUrl =
     skinImageUrls[materialDef.file ?? materialDef.name]?.[frameIndex];
   const defaultSkinImageUrl =
     defaultSkinImageUrls[materialDef.file ?? materialDef.name]?.[frameIndex];
+  const materialKey = materialDef.file ?? materialDef.name;
+  const importedLayerData = useMemo(() => {
+    if (selectedSkinType !== "import") {
+      return null;
+    }
+
+    const importedSkinsForModel = importedSkins.get(actualModel) ?? new Map();
+    const selectedImportedSkin =
+      importedSkinsForModel.get(selectedSkin === "__untitled__" ? null : selectedSkin) ??
+      Array.from(importedSkinsForModel.values()).find(
+        (skin) =>
+          (selectedSkin === "__untitled__" && !skin.name) ||
+          skin.name === selectedSkin
+      ) ??
+      null;
+
+    const layers =
+      selectedImportedSkin?.layersByMaterial?.get(materialKey)?.get(frameIndex) ?? [];
+    const layerImageUrls =
+      selectedImportedSkin?.layerImageUrlsByMaterial?.get(materialKey)?.get(frameIndex) ?? {};
+
+    if (!layers.length) {
+      return null;
+    }
+
+    return { layers, layerImageUrls };
+  }, [
+    actualModel,
+    importedSkins,
+    materialKey,
+    selectedSkin,
+    selectedSkinType,
+    frameIndex,
+  ]);
   const { setColorImageUrl } = useSkin();
   const { canvasPadding } = useSettings();
   const [noAlphaImageUrl, setNoAlphaImageUrl] = useState<string | null>(null);
@@ -99,6 +140,7 @@ export default function ColorCanvas({
       canvasType="color"
       onChange={handleChange}
       baseImageUrl={noAlphaImageUrl}
+      importedLayerData={importedLayerData}
       textureSize={textureSize}
     />
   ) : null;
